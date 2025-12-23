@@ -241,8 +241,18 @@ main() {
 
     # Prepare image if custom tag specified
     if [ -n "${CUSTOM_TAG}" ]; then
+        # Normalize the tag - remove "defender" prefix if present
+        # The tag should be just the version like "_34_01_132", not "defender_34_01_132"
+        # User can pass either "defender_34_01_132" or "_34_01_132" - we handle both
+        local original_tag="${CUSTOM_TAG}"
+        CUSTOM_TAG="${CUSTOM_TAG#defender}"  # Remove "defender" prefix if present
+
+        print_info "Tag normalization: '${original_tag}' -> '${CUSTOM_TAG}'"
+
         local target_image="twistlock/private:defender${CUSTOM_TAG}"
         local image_ready="false"
+
+        print_info "Looking for image: ${target_image}"
 
         # Check if image already exists locally
         if check_image_exists "${target_image}"; then
@@ -317,6 +327,7 @@ main() {
 
     # Modification 1: If custom tag specified, inject sed command after twistlock.cfg download
     if [ -n "${CUSTOM_TAG}" ]; then
+        print_info "Injecting tag modification for: ${CUSTOM_TAG}"
         # Add sed command to modify DOCKER_TWISTLOCK_TAG in twistlock.cfg after it's downloaded
         # Find the line that downloads twistlock.cfg and add our modification after it
         sed -i.bak '/scripts\/twistlock.cfg -o twistlock.cfg/a\
