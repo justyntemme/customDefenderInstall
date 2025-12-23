@@ -281,14 +281,31 @@ main() {
     local temp_dir=$(mktemp -d)
     local defender_script="${temp_dir}/defender.sh"
 
-    curl -sSL --fail \
+    # Normalize the API URL - remove trailing slash and /api/v1 if present
+    local api_base="${PRISMA_API_URL%/}"  # Remove trailing slash
+    api_base="${api_base%/api/v1}"        # Remove /api/v1 if present
+    api_base="${api_base%/api}"           # Remove /api if present
+
+    local full_url="${api_base}/api/v1/scripts/defender.sh"
+    print_info "API URL: ${full_url}"
+
+    local http_code
+    http_code=$(curl -sSL -w "%{http_code}" \
         --header "authorization: Bearer ${PRISMA_TOKEN}" \
         -X POST \
-        "${PRISMA_API_URL}/api/v1/scripts/defender.sh" \
-        -o "${defender_script}"
+        "${full_url}" \
+        -o "${defender_script}" 2>/dev/null)
 
-    if [ $? -ne 0 ]; then
-        print_error "Failed to download defender.sh"
+    if [ "${http_code}" != "200" ]; then
+        print_error "Failed to download defender.sh (HTTP ${http_code})"
+        print_error ""
+        print_error "Possible causes:"
+        print_error "  - Token expired (tokens typically expire after ~10 minutes)"
+        print_error "  - Incorrect PRISMA_API_URL"
+        print_error "  - Network connectivity issues"
+        print_error ""
+        print_error "To get a fresh token, run the defender download command from the"
+        print_error "Prisma Cloud console and copy the token from the curl command."
         rm -rf "${temp_dir}"
         exit 1
     fi
