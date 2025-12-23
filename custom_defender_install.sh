@@ -48,7 +48,7 @@ print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 # Custom parameters
 CUSTOM_TAG=""
 CUSTOM_IMAGE=""
-CUSTOM_REGISTRY=""
+SOURCE_IMAGE=""
 KEEP_FILES="false"
 
 # Show help
@@ -70,15 +70,16 @@ REQUIRED ENVIRONMENT VARIABLES:
                      Example: us-east1.cloud.twistlock.com
 
 CUSTOM OPTIONS (must come before standard options):
-  --tag TAG          Use a specific defender version tag
-                     Example: --tag _33_00_123
+  --tag TAG          Use a specific defender version tag (required with --image or --source-image)
+                     Example: --tag _34_01_132
 
-  --image PATH       Use a local Docker image tar.gz file instead of downloading
+  --image PATH       Load defender from a local tar.gz file (requires --tag)
                      Example: --image /path/to/twistlock_defender.tar.gz
 
-  --registry URL     Docker registry to pull defender image from
-                     Example: --registry myregistry.example.com/twistlock
-                     Will pull: REGISTRY/private:defenderTAG
+  --source-image IMG Use an existing Docker image by full name (requires --tag)
+                     The image will be re-tagged to match what twistlock.sh expects
+                     Example: --source-image registry-auth.twistlock.com/xxx/twistlock/defender:_34_01_132
+                     Example: --source-image myregistry.com/twistlock/private:defender_34_01_132
 
   --keep-files       Preserve the .twistlock folder after installation
                      (default: deleted after install, matching original behavior)
@@ -102,31 +103,26 @@ EXAMPLES:
   export PRISMA_TOKEN="your-token-here"
   export PRISMA_CONSOLE="us-east1.cloud.twistlock.com"
 
-  # Standard install (latest version)
+  # Standard install (latest version from console)
   ./custom_defender_install.sh -v -m -n
 
-  # Install specific version, pulling from private registry
-  ./custom_defender_install.sh --tag _33_00_123 --registry myregistry.example.com/twistlock -v -m -n
+  # Install specific version from a tar.gz backup
+  ./custom_defender_install.sh --tag _34_01_132 --image ./defender_backup.tar.gz -v -m -n
 
-  # Install specific version from local backup image
-  ./custom_defender_install.sh --tag _33_00_123 --image ./backups/defender_33_00_123.tar.gz -v -m -n
+  # Install specific version from an existing Docker image
+  ./custom_defender_install.sh --tag _34_01_132 --source-image registry-auth.twistlock.com/xxx/twistlock/defender:_34_01_132 -v -m -n
 
   # Install and keep configuration files for inspection
   ./custom_defender_install.sh --keep-files -v -m -n
 
 IMAGE MANAGEMENT FOR ROLLBACKS:
-  To rollback to older versions, you need the older image available either:
+  To rollback to older versions, you need the older image available as either:
 
-  1. In a private Docker registry (use --registry)
-  2. As a local tar.gz file (use --image)
-  3. Already loaded in local Docker (script auto-detects)
+  1. A local tar.gz file (use --image)
+  2. An existing Docker image (use --source-image)
 
-  Recommended: After each defender install, backup the image:
+  Backup after each install:
     docker save twistlock/private:defender_XX_XX_XXX | gzip > defender_backup.tar.gz
-
-  Or push to your private registry:
-    docker tag twistlock/private:defender_XX_XX_XXX myregistry/twistlock/private:defender_XX_XX_XXX
-    docker push myregistry/twistlock/private:defender_XX_XX_XXX
 
 EOF
 }
@@ -143,8 +139,8 @@ while [[ $# -gt 0 ]]; do
             CUSTOM_IMAGE="$2"
             shift 2
             ;;
-        --registry)
-            CUSTOM_REGISTRY="$2"
+        --source-image)
+            SOURCE_IMAGE="$2"
             shift 2
             ;;
         --keep-files)
@@ -191,20 +187,24 @@ check_image_exists() {
     docker images --format "{{.Repository}}:{{.Tag}}" 2>/dev/null | grep -q "^${image_name}$"
 }
 
-# Pull image from registry and tag for local use
-pull_and_tag_image() {
-    local registry="$1"
-    local tag="$2"
-    local remote_image="${registry}/private:defender${tag}"
-    local local_image="twistlock/private:defender${tag}"
+# Re-tag an existing Docker image to the expected name
+retag_image() {
+    local source="$1"
+    local target="$2"
 
-    print_info "Pulling image from registry: ${remote_image}"
-    if docker pull "${remote_image}"; then
-        print_info "Tagging as ${local_image}"
-        docker tag "${remote_image}" "${local_image}"
+    print_info "Re-tagging image: ${source} -> ${target}"
+
+    # Check if source image exists
+    if ! docker image inspect "${source}" >/dev/null 2>&1; then
+        print_error "Source image not found: ${source}"
+        return 1
+    fi
+
+    if docker tag "${source}" "${target}"; then
+        print_info "Successfully re-tagged image"
         return 0
     else
-        print_warn "Failed to pull from registry"
+        print_error "Failed to re-tag image"
         return 1
     fi
 }
@@ -239,49 +239,44 @@ main() {
         print_info "Custom tag requested: ${CUSTOM_TAG}"
     fi
 
+    # Validate custom tag usage - must have --image or --source-image
+    if [ -n "${CUSTOM_TAG}" ]; then
+        if [ -z "${CUSTOM_IMAGE}" ] && [ -z "${SOURCE_IMAGE}" ]; then
+            print_error "--tag requires either --image or --source-image"
+            print_error ""
+            print_error "Usage:"
+            print_error "  --tag TAG --image /path/to/defender.tar.gz"
+            print_error "  --tag TAG --source-image registry.example.com/twistlock/defender:TAG"
+            exit 1
+        fi
+    fi
+
     # Prepare image if custom tag specified
     if [ -n "${CUSTOM_TAG}" ]; then
         # Normalize the tag - remove "defender" prefix if present
-        # The tag should be just the version like "_34_01_132", not "defender_34_01_132"
-        # User can pass either "defender_34_01_132" or "_34_01_132" - we handle both
         local original_tag="${CUSTOM_TAG}"
         CUSTOM_TAG="${CUSTOM_TAG#defender}"  # Remove "defender" prefix if present
 
-        print_info "Tag normalization: '${original_tag}' -> '${CUSTOM_TAG}'"
+        print_info "Tag: '${original_tag}' -> '${CUSTOM_TAG}'"
 
         local target_image="twistlock/private:defender${CUSTOM_TAG}"
-        local image_ready="false"
 
-        print_info "Looking for image: ${target_image}"
-
-        # Check if image already exists locally
-        if check_image_exists "${target_image}"; then
-            print_info "Image ${target_image} already exists locally"
-            image_ready="true"
-        # Try to load from file if specified
-        elif [ -n "${CUSTOM_IMAGE}" ]; then
+        # Load from tar.gz file if specified
+        if [ -n "${CUSTOM_IMAGE}" ]; then
             if load_image_from_file "${CUSTOM_IMAGE}"; then
-                image_ready="true"
+                print_info "Image loaded from file"
             else
-                print_error "Failed to load custom image. Aborting."
+                print_error "Failed to load image from file. Aborting."
                 exit 1
             fi
-        # Try to pull from registry if specified
-        elif [ -n "${CUSTOM_REGISTRY}" ]; then
-            if pull_and_tag_image "${CUSTOM_REGISTRY}" "${CUSTOM_TAG}"; then
-                image_ready="true"
+        # Re-tag existing Docker image if specified
+        elif [ -n "${SOURCE_IMAGE}" ]; then
+            if retag_image "${SOURCE_IMAGE}" "${target_image}"; then
+                print_info "Image ready: ${target_image}"
             else
-                print_error "Failed to pull from registry and no local image available."
-                print_error "Cannot proceed with custom tag ${CUSTOM_TAG}"
+                print_error "Failed to re-tag image. Aborting."
                 exit 1
             fi
-        else
-            print_error "Custom tag ${CUSTOM_TAG} specified but image not found locally."
-            print_error "You must either:"
-            print_error "  1. Use --registry to pull from a private registry"
-            print_error "  2. Use --image to load from a local tar.gz file"
-            print_error "  3. Ensure the image is already in local Docker"
-            exit 1
         fi
     fi
 

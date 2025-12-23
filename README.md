@@ -1,6 +1,6 @@
 # Prisma Cloud Custom Defender Installer
 
-A wrapper script for the Prisma Cloud Defender installation that enables **version rollback** capabilities by allowing you to specify custom Docker image tags.
+A wrapper script for the Prisma Cloud Defender installation that enables **version rollback** capabilities by allowing you to install a specific defender version from a backup image.
 
 ## The Problem
 
@@ -12,7 +12,7 @@ This wrapper script:
 
 1. Downloads the official `defender.sh` from your Prisma Cloud console
 2. Applies modifications using `sed` to support custom version tags
-3. Loads the defender image from your private registry or local backup
+3. Loads the defender image from your backup file or existing Docker image
 4. Runs the installation with your specified version
 
 **No customer data is stored in this repository** - all configuration is provided via environment variables.
@@ -43,58 +43,23 @@ export PRISMA_CONSOLE="us-east1.cloud.twistlock.com"
 
 ### 3. Install Specific Version (Rollback)
 
+**From a tar.gz backup file:**
 ```bash
-# From private registry
-./custom_defender_install.sh --tag _33_00_123 --registry myregistry.example.com/twistlock -v -m -n
-
-# From local backup file
-./custom_defender_install.sh --tag _33_00_123 --image ./backups/defender_33_00_123.tar.gz -v -m -n
+./custom_defender_install.sh --tag _34_01_132 --image ./defender_backup.tar.gz -v -m -n
 ```
 
-## Important: Image Availability for Rollbacks
-
-**You cannot rollback to a version you don't have the image for.**
-
-The Prisma Cloud console API only serves the current/latest defender image. To enable rollbacks, you must preserve older images using one of these methods:
-
-### Option 1: Private Docker Registry (Recommended)
-
-After each defender installation, push the image to your private registry:
-
+**From an existing Docker image:**
 ```bash
-# Get the current tag from the installed defender
-CURRENT_TAG=$(docker images --format "{{.Tag}}" twistlock/private | grep defender | head -1)
-
-# Tag and push to your registry
-docker tag twistlock/private:${CURRENT_TAG} myregistry.example.com/twistlock/private:${CURRENT_TAG}
-docker push myregistry.example.com/twistlock/private:${CURRENT_TAG}
-```
-
-### Option 2: Local Backup Files
-
-Save the image as a tar.gz file:
-
-```bash
-CURRENT_TAG=$(docker images --format "{{.Tag}}" twistlock/private | grep defender | head -1)
-docker save twistlock/private:${CURRENT_TAG} | gzip > defender_backup_${CURRENT_TAG}.tar.gz
-```
-
-### Option 3: Keep Images in Local Docker
-
-Simply don't remove old images from Docker:
-
-```bash
-# List available defender versions
-docker images twistlock/private --format "{{.Repository}}:{{.Tag}}" | grep defender
+./custom_defender_install.sh --tag _34_01_132 --source-image registry-auth.twistlock.com/xxx/twistlock/defender:_34_01_132 -v -m -n
 ```
 
 ## Custom Options
 
 | Option | Description |
 |--------|-------------|
-| `--tag TAG` | Specify the defender version tag (e.g., `_33_00_123`) |
+| `--tag TAG` | Specify the defender version tag (requires `--image` or `--source-image`) |
 | `--image PATH` | Load defender from a local tar.gz file |
-| `--registry URL` | Pull defender image from a private Docker registry |
+| `--source-image IMG` | Use an existing Docker image (will be re-tagged for twistlock.sh) |
 | `--keep-files` | Preserve the `.twistlock/` folder after installation |
 | `--help` | Show detailed help message |
 
@@ -129,19 +94,26 @@ All standard defender.sh options are passed through:
 ./custom_defender_install.sh -v -m -n
 ```
 
-### Rollback Using Private Registry
+### Rollback Using Backup File
 ```bash
 ./custom_defender_install.sh \
-  --tag _33_00_123 \
-  --registry myregistry.example.com/twistlock \
+  --tag _34_01_132 \
+  --image ./backups/defender_34_01_132.tar.gz \
   -v -m -n
 ```
 
-### Rollback Using Local Backup
+### Rollback Using Existing Docker Image
 ```bash
+# If the image was pulled from Twistlock registry
 ./custom_defender_install.sh \
-  --tag _33_00_123 \
-  --image ./backups/defender_33_00_123.tar.gz \
+  --tag _34_01_132 \
+  --source-image "registry-auth.twistlock.com/TOKEN/twistlock/defender:_34_01_132" \
+  -v -m -n
+
+# If the image is from your private registry
+./custom_defender_install.sh \
+  --tag _34_01_132 \
+  --source-image "myregistry.example.com/twistlock/private:defender_34_01_132" \
   -v -m -n
 ```
 
@@ -150,22 +122,16 @@ All standard defender.sh options are passed through:
 ./custom_defender_install.sh --keep-files -v -m -n
 ```
 
-### Debug Mode
-```bash
-./custom_defender_install.sh --keep-files -v -m -n -z
-```
-
 ## How It Works
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │  1. Validate environment variables                               │
 ├──────────────────────────────────────────────────────────────────┤
-│  2. If --tag specified:                                          │
-│     ├─ Check if image exists locally in Docker                   │
-│     ├─ If not, load from --image file                           │
-│     ├─ If not, pull from --registry                             │
-│     └─ Exit with error if image unavailable                     │
+│  2. If --tag specified with --image:                             │
+│     └─ Load image from tar.gz file                              │
+│  2. If --tag specified with --source-image:                      │
+│     └─ Re-tag existing Docker image to expected name            │
 ├──────────────────────────────────────────────────────────────────┤
 │  3. Download official defender.sh from Prisma Cloud console     │
 ├──────────────────────────────────────────────────────────────────┤
@@ -180,36 +146,24 @@ All standard defender.sh options are passed through:
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-## Rollback Workflow
+## Backup Workflow for Future Rollbacks
 
-### Preparation (Do This After Every Update)
+After each successful defender installation, create a backup:
 
+### Option 1: Save as tar.gz file
 ```bash
-# 1. After installing a new defender version, note the tag
+# Find the current tag
 docker images twistlock/private --format "{{.Tag}}" | grep defender
 # Output: defender_34_03_138
 
-# 2. Backup the image (choose one method)
-
-# Method A: Push to private registry
-docker tag twistlock/private:defender_34_03_138 myregistry.example.com/twistlock/private:defender_34_03_138
-docker push myregistry.example.com/twistlock/private:defender_34_03_138
-
-# Method B: Save to file
+# Save to file
 docker save twistlock/private:defender_34_03_138 | gzip > defender_34_03_138.tar.gz
 ```
 
-### When Rollback Is Needed
-
+### Option 2: Push to private registry
 ```bash
-# 1. First, uninstall the current defender
-# (Follow Prisma Cloud documentation for defender removal)
-
-# 2. Install the previous version
-./custom_defender_install.sh \
-  --tag _33_00_100 \
-  --registry myregistry.example.com/twistlock \
-  -v -m -n
+docker tag twistlock/private:defender_34_03_138 myregistry.example.com/twistlock/private:defender_34_03_138
+docker push myregistry.example.com/twistlock/private:defender_34_03_138
 ```
 
 ## Troubleshooting
@@ -226,19 +180,28 @@ echo "Console: ${PRISMA_CONSOLE}"
 
 ### "Failed to download defender.sh"
 
-- Verify your `PRISMA_TOKEN` is valid and not expired
-- Check that `PRISMA_API_URL` is correct
+- Verify your `PRISMA_TOKEN` is valid and not expired (tokens expire after ~10 minutes)
+- Check that `PRISMA_API_URL` includes your tenant ID (e.g., `us-2-XXXXXX`)
 - Ensure network connectivity to Prisma Cloud
 
-### "Custom tag specified but image not found locally"
+### "--tag requires either --image or --source-image"
 
-You must provide the image using `--registry` or `--image`. The console only serves the latest version.
+When using `--tag`, you must provide the image source:
+```bash
+# From file
+./custom_defender_install.sh --tag _34_01_132 --image ./backup.tar.gz -v -m -n
 
-### "Failed to pull from registry"
+# From existing Docker image
+./custom_defender_install.sh --tag _34_01_132 --source-image myimage:tag -v -m -n
+```
 
-- Verify you're authenticated to the registry: `docker login myregistry.example.com`
-- Check the image path matches your registry structure
-- Ensure the specific tag exists in your registry
+### "Source image not found"
+
+The image specified with `--source-image` doesn't exist in local Docker. Check available images:
+```bash
+docker images | grep -i twistlock
+docker images | grep -i defender
+```
 
 ## License
 
