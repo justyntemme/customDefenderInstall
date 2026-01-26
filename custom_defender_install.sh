@@ -18,6 +18,8 @@
 #   --image PATH       - Use a local Docker image tar.gz file
 #   --registry URL     - Pull image from a private Docker registry
 #   --keep-files       - Preserve the .twistlock folder after installation
+#   --cpu-limit CPUS   - Limit container to specific CPU cores (e.g., 0-3 or 0,2)
+#   --memory-limit MEM - Limit container memory (e.g., 512m, 2g)
 #
 # Usage:
 #   ./custom_defender_install.sh [CUSTOM_OPTIONS] [STANDARD_DEFENDER_OPTIONS]
@@ -31,6 +33,12 @@
 #
 #   # Install from local image file
 #   ./custom_defender_install.sh --tag _33_00_123 --image ./defender_backup.tar.gz -v -m -n
+#
+#   # Install with CPU core limit (restrict to cores 0-3)
+#   ./custom_defender_install.sh --cpu-limit 0-3 -v -m -n
+#
+#   # Install with memory limit (2GB) and CPU limit
+#   ./custom_defender_install.sh --cpu-limit 0-3 --memory-limit 2g -v -m -n
 #########
 
 set -e
@@ -50,6 +58,8 @@ CUSTOM_TAG=""
 CUSTOM_IMAGE=""
 SOURCE_IMAGE=""
 KEEP_FILES="false"
+CPU_LIMIT=""
+MEMORY_LIMIT=""
 
 # Show help
 show_help() {
@@ -84,6 +94,14 @@ CUSTOM OPTIONS (must come before standard options):
   --keep-files       Preserve the .twistlock folder after installation
                      (default: deleted after install, matching original behavior)
 
+  --cpu-limit CPUS   Limit the container to specific CPU cores using --cpuset-cpus
+                     Example: --cpu-limit 0-3 (use cores 0, 1, 2, 3)
+                     Example: --cpu-limit 0,2 (use cores 0 and 2)
+
+  --memory-limit MEM Limit the container memory using --memory
+                     Example: --memory-limit 512m (limit to 512 megabytes)
+                     Example: --memory-limit 2g (limit to 2 gigabytes)
+
   --help             Show this help message
 
 STANDARD DEFENDER OPTIONS (passed through to defender.sh):
@@ -114,6 +132,12 @@ EXAMPLES:
 
   # Install and keep configuration files for inspection
   ./custom_defender_install.sh --keep-files -v -m -n
+
+  # Install with CPU core limit (restrict to cores 0-3)
+  ./custom_defender_install.sh --cpu-limit 0-3 -v -m -n
+
+  # Install with memory limit (2GB) and CPU limit
+  ./custom_defender_install.sh --cpu-limit 0-3 --memory-limit 2g -v -m -n
 
 IMAGE MANAGEMENT FOR ROLLBACKS:
   To rollback to older versions, you need the older image available as either:
@@ -146,6 +170,14 @@ while [[ $# -gt 0 ]]; do
         --keep-files)
             KEEP_FILES="true"
             shift
+            ;;
+        --cpu-limit)
+            CPU_LIMIT="$2"
+            shift 2
+            ;;
+        --memory-limit)
+            MEMORY_LIMIT="$2"
+            shift 2
             ;;
         --help|-h)
             show_help
@@ -356,6 +388,20 @@ main() {
         sed -i.bak '/exit_on_failure \$? "Failed to download Defender image from Console"/a\
 	fi
 ' "${defender_script}"
+    fi
+
+    # Modification 4: Add --cpuset-cpus to docker run command if cpu-limit specified
+    if [ -n "${CPU_LIMIT}" ]; then
+        print_info "Injecting CPU limit: --cpuset-cpus=${CPU_LIMIT}"
+        # Replace "docker run" with "docker run --cpuset-cpus=VALUE" in the defender script
+        sed -i.bak "s/docker run /docker run --cpuset-cpus=${CPU_LIMIT} /g" "${defender_script}"
+    fi
+
+    # Modification 5: Add --memory to docker run command if memory-limit specified
+    if [ -n "${MEMORY_LIMIT}" ]; then
+        print_info "Injecting memory limit: --memory=${MEMORY_LIMIT}"
+        # Replace "docker run" with "docker run --memory=VALUE" in the defender script
+        sed -i.bak "s/docker run /docker run --memory=${MEMORY_LIMIT} /g" "${defender_script}"
     fi
 
     # Clean up backup files
