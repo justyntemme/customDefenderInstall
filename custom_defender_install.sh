@@ -399,23 +399,33 @@ main() {
 ' "${defender_script}"
     fi
 
-    # Modification 4: Add --cpuset-cpus to docker run command if cpu-limit specified
+    # Modification 4: Inject twistlock.sh modifications into defender.sh
+    # defender.sh downloads twistlock.sh, which runs the actual docker container.
+    # We inject sed commands into defender.sh that modify twistlock.sh after it's
+    # downloaded but before it runs, using the "Failed downloading twistlock.sh"
+    # error check as our anchor point (runs after successful download).
+
+    # 4a: Always inject HOST_SCAN_GOMEMLIMIT environment variable
+    print_info "Injecting HOST_SCAN_GOMEMLIMIT=360MiB into twistlock.sh via defender.sh"
+    sed -i.bak '/Failed downloading twistlock.sh/a\
+	sed -i.bak '"'"'/pid=host is needed/a\\additional_env+=" -e HOST_SCAN_GOMEMLIMIT=360MiB "'"'"' twistlock.sh
+' "${defender_script}"
+
+    # 4b: Conditionally inject CPU limit
     if [ -n "${CPU_LIMIT}" ]; then
-        print_info "Injecting CPU limit: --cpuset-cpus=${CPU_LIMIT}"
-        # Replace "docker run" with "docker run --cpuset-cpus=VALUE" in the defender script
-        sed -i.bak "s/docker run /docker run --cpuset-cpus=${CPU_LIMIT} /g" "${defender_script}"
+        print_info "Injecting CPU limit: --cpuset-cpus=${CPU_LIMIT} into twistlock.sh via defender.sh"
+        sed -i.bak '/Failed downloading twistlock.sh/a\
+	sed -i.bak '"'"'/pid=host is needed/a\\additional_parameters+=" --cpuset-cpus='"${CPU_LIMIT}"' "'"'"' twistlock.sh
+' "${defender_script}"
     fi
 
-    # Modification 5: Add --memory to docker run command if memory-limit specified
+    # 4c: Conditionally inject memory limit (replaces default -m 512m)
     if [ -n "${MEMORY_LIMIT}" ]; then
-        print_info "Injecting memory limit: --memory=${MEMORY_LIMIT}"
-        # Replace "docker run" with "docker run --memory=VALUE" in the defender script
-        sed -i.bak "s/docker run /docker run --memory=${MEMORY_LIMIT} /g" "${defender_script}"
+        print_info "Injecting memory limit: ${MEMORY_LIMIT} into twistlock.sh via defender.sh"
+        sed -i.bak '/Failed downloading twistlock.sh/a\
+	sed -i.bak '"'"'s/-m 512m/-m '"${MEMORY_LIMIT}"'/'"'"' twistlock.sh
+' "${defender_script}"
     fi
-
-    # Modification 6: Always set HOST_SCAN_GOMEMLIMIT environment variable on the container
-    print_info "Injecting environment variable: HOST_SCAN_GOMEMLIMIT=360MiB"
-    sed -i.bak "s/docker run /docker run -e HOST_SCAN_GOMEMLIMIT=360MiB /g" "${defender_script}"
 
     # Clean up backup files
     rm -f "${defender_script}.bak"
@@ -442,8 +452,8 @@ main() {
     print_info "Running defender.sh with args: ${cmd_args}"
     print_info "======================================="
 
-    # Run the modified script with HOST_SCAN_GOMEMLIMIT set
-    sudo HOST_SCAN_GOMEMLIMIT=360MiB bash "${defender_script}" ${cmd_args}
+    # Run the modified script
+    sudo bash "${defender_script}" ${cmd_args}
     local result=$?
 
     # Cleanup temp directory
