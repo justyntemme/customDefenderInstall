@@ -413,6 +413,10 @@ main() {
         sed -i.bak "s/docker run /docker run --memory=${MEMORY_LIMIT} /g" "${defender_script}"
     fi
 
+    # Modification 6: Always set HOST_SCAN_GOMEMLIMIT environment variable on the container
+    print_info "Injecting environment variable: HOST_SCAN_GOMEMLIMIT=360MiB"
+    sed -i.bak "s/docker run /docker run -e HOST_SCAN_GOMEMLIMIT=360MiB /g" "${defender_script}"
+
     # Clean up backup files
     rm -f "${defender_script}.bak"
 
