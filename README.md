@@ -61,6 +61,8 @@ export PRISMA_CONSOLE="us-east1.cloud.twistlock.com"
 | `--image PATH` | Load defender from a local tar.gz file |
 | `--source-image IMG` | Use an existing Docker image (will be re-tagged for twistlock.sh) |
 | `--keep-files` | Preserve the `.twistlock/` folder after installation |
+| `--cpu-limit CPUS` | Limit container to specific CPU cores (e.g., `0-3` or `0,2`) |
+| `--memory-limit MEM` | Limit container memory (e.g., `512m`, `2g`) |
 | `--help` | Show detailed help message |
 
 ## Standard Defender Options
@@ -122,6 +124,18 @@ All standard defender.sh options are passed through:
 ./custom_defender_install.sh --keep-files -v -m -n
 ```
 
+### Install with Resource Limits
+```bash
+# Limit to CPU cores 0-3
+./custom_defender_install.sh --cpu-limit 0-3 -v -m -n
+
+# Limit to 2GB memory
+./custom_defender_install.sh --memory-limit 2g -v -m -n
+
+# Combine CPU and memory limits
+./custom_defender_install.sh --cpu-limit 0-3 --memory-limit 2g -v -m -n
+```
+
 ## How It Works
 
 ```
@@ -138,7 +152,9 @@ All standard defender.sh options are passed through:
 │  4. Apply sed modifications:                                     │
 │     ├─ Inject custom tag into twistlock.cfg after download      │
 │     ├─ Skip image download if already loaded locally            │
-│     └─ Comment out cleanup if --keep-files specified            │
+│     ├─ Comment out cleanup if --keep-files specified            │
+│     ├─ Add --cpuset-cpus to docker run if --cpu-limit specified │
+│     └─ Add --memory to docker run if --memory-limit specified   │
 ├──────────────────────────────────────────────────────────────────┤
 │  5. Run modified defender.sh with sudo                           │
 ├──────────────────────────────────────────────────────────────────┤

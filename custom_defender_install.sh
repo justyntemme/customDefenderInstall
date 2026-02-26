@@ -8,10 +8,9 @@
 # This script does NOT contain any customer-specific data - all configuration
 # is provided via environment variables or command-line arguments.
 #
-# Required Environment Variables:
-#   PRISMA_API_URL     - Your Prisma Cloud API URL (e.g., https://us-east1.cloud.twistlock.com/us-2-XXXXXX)
-#   PRISMA_TOKEN       - Your Prisma Cloud authentication token
-#   PRISMA_CONSOLE     - Console address (e.g., us-east1.cloud.twistlock.com)
+# Required (via environment variable or parameter):
+#   PRISMA_CONSOLE / --console  - Your Prisma Cloud console URL (e.g., https://us-east1.cloud.twistlock.com/us-2-XXXXXX)
+#   PRISMA_TOKEN   / --token    - Your Prisma Cloud authentication token
 #
 # Custom Options (must come BEFORE standard options):
 #   --tag TAG          - Use a specific defender version tag (e.g., _33_00_123)
@@ -70,14 +69,15 @@ Custom Prisma Cloud Defender Installer
 Downloads the official defender.sh and applies modifications to support
 custom Docker tags for version rollback scenarios.
 
-REQUIRED ENVIRONMENT VARIABLES:
-  PRISMA_API_URL     Your Prisma Cloud API URL
+REQUIRED (via environment variable or parameter):
+  PRISMA_CONSOLE     Your Prisma Cloud console URL (env variable)
+  --console URL      Your Prisma Cloud console URL (parameter)
                      Example: https://us-east1.cloud.twistlock.com/us-2-XXXXXX
 
-  PRISMA_TOKEN       Your Prisma Cloud authentication token (Bearer token)
+  PRISMA_TOKEN       Your Prisma Cloud authentication token (env variable)
+  --token TOKEN      Your Prisma Cloud authentication token (parameter)
 
-  PRISMA_CONSOLE     Console address for defender communication
-                     Example: us-east1.cloud.twistlock.com
+  Parameters override environment variables if both are set.
 
 CUSTOM OPTIONS (must come before standard options):
   --tag TAG          Use a specific defender version tag (required with --image or --source-image)
@@ -116,13 +116,17 @@ STANDARD DEFENDER OPTIONS (passed through to defender.sh):
   --ws-port PORT     WebSocket port (default: 443)
 
 EXAMPLES:
-  # Set environment variables first
-  export PRISMA_API_URL="https://us-east1.cloud.twistlock.com/us-2-XXXXXX"
+  # Using environment variables
+  export PRISMA_CONSOLE="https://us-east1.cloud.twistlock.com/us-2-XXXXXX"
   export PRISMA_TOKEN="your-token-here"
-  export PRISMA_CONSOLE="us-east1.cloud.twistlock.com"
-
-  # Standard install (latest version from console)
   ./custom_defender_install.sh -v -m -n
+
+  # Using parameters instead
+  ./custom_defender_install.sh --console "https://us-east1.cloud.twistlock.com/us-2-XXXXXX" --token "your-token-here" -v -m -n
+
+  # Mixing: console via env, token via parameter
+  export PRISMA_CONSOLE="https://us-east1.cloud.twistlock.com/us-2-XXXXXX"
+  ./custom_defender_install.sh --token "your-token-here" -v -m -n
 
   # Install specific version from a tar.gz backup
   ./custom_defender_install.sh --tag _34_01_132 --image ./defender_backup.tar.gz -v -m -n
@@ -179,6 +183,14 @@ while [[ $# -gt 0 ]]; do
             MEMORY_LIMIT="$2"
             shift 2
             ;;
+        --console)
+            PRISMA_CONSOLE="$2"
+            shift 2
+            ;;
+        --token)
+            PRISMA_TOKEN="$2"
+            shift 2
+            ;;
         --help|-h)
             show_help
             exit 0
@@ -191,22 +203,19 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Validate required environment variables
+# Validate required configuration (set via env variable or parameter)
 validate_env() {
     local missing=""
 
-    if [ -z "${PRISMA_API_URL}" ]; then
-        missing="${missing}  PRISMA_API_URL\n"
+    if [ -z "${PRISMA_CONSOLE}" ]; then
+        missing="${missing}  PRISMA_CONSOLE (env) or --console (parameter)\n"
     fi
     if [ -z "${PRISMA_TOKEN}" ]; then
-        missing="${missing}  PRISMA_TOKEN\n"
-    fi
-    if [ -z "${PRISMA_CONSOLE}" ]; then
-        missing="${missing}  PRISMA_CONSOLE\n"
+        missing="${missing}  PRISMA_TOKEN (env) or --token (parameter)\n"
     fi
 
     if [ -n "${missing}" ]; then
-        print_error "Missing required environment variables:"
+        print_error "Missing required configuration:"
         echo -e "${missing}"
         echo "Run with --help for usage information."
         exit 1
@@ -318,8 +327,8 @@ main() {
     local temp_dir=$(mktemp -d)
     local defender_script="${temp_dir}/defender.sh"
 
-    # Normalize the API URL - remove trailing slash and /api/v1 if present
-    local api_base="${PRISMA_API_URL%/}"  # Remove trailing slash
+    # Normalize the console URL - remove trailing slash and /api/v1 if present
+    local api_base="${PRISMA_CONSOLE%/}"  # Remove trailing slash
     api_base="${api_base%/api/v1}"        # Remove /api/v1 if present
     api_base="${api_base%/api}"           # Remove /api if present
 
@@ -338,7 +347,7 @@ main() {
         print_error ""
         print_error "Possible causes:"
         print_error "  - Token expired (tokens typically expire after ~10 minutes)"
-        print_error "  - Incorrect PRISMA_API_URL"
+        print_error "  - Incorrect PRISMA_CONSOLE URL"
         print_error "  - Network connectivity issues"
         print_error ""
         print_error "To get a fresh token, run the defender download command from the"
@@ -407,8 +416,13 @@ main() {
     # Clean up backup files
     rm -f "${defender_script}.bak"
 
+    # Extract hostname from PRISMA_CONSOLE URL for the -c flag
+    local console_host="${PRISMA_CONSOLE#https://}"
+    console_host="${console_host#http://}"
+    console_host="${console_host%%/*}"
+
     # Build the command arguments
-    local cmd_args="-c ${PRISMA_CONSOLE}"
+    local cmd_args="-c ${console_host}"
 
     # Add custom tag override for twistlock.sh
     if [ -n "${CUSTOM_TAG}" ]; then
@@ -424,8 +438,8 @@ main() {
     print_info "Running defender.sh with args: ${cmd_args}"
     print_info "======================================="
 
-    # Run the modified script
-    sudo bash "${defender_script}" ${cmd_args}
+    # Run the modified script with HOST_SCAN_GOMEMLIMIT set
+    sudo HOST_SCAN_GOMEMLIMIT=360MiB bash "${defender_script}" ${cmd_args}
     local result=$?
 
     # Cleanup temp directory
