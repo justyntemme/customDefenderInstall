@@ -123,7 +123,8 @@ STANDARD DEFENDER OPTIONS (passed through to defender.sh):
   -v                 Verify TLS certificates
   -m                 Enable advanced custom compliance
   -n                 Enable nftables
-  -u                 Enable unique hostname
+  -u                 Assign globally unique names to hosts (for autoscale groups,
+                     overlapping IPs, or hosts with identical hostnames)
   -z                 Enable debug logging
   -r                 Enable registry scanner
   --install-host     Install as Linux Server Defender
