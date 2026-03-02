@@ -10,7 +10,12 @@
 #
 # Required (via environment variable or parameter):
 #   PRISMA_CONSOLE / --console  - Your Prisma Cloud console URL (e.g., https://us-east1.cloud.twistlock.com/us-2-XXXXXX)
+#
+# Authentication (one of the following):
 #   PRISMA_TOKEN   / --token    - Your Prisma Cloud authentication token
+#   -- OR --
+#   PRISMA_ACCESS_KEY / --user      - Access Key ID (service account)
+#   PRISMA_SECRET_KEY / --password  - Access Key Secret
 #
 # Custom Options (must come BEFORE standard options):
 #   --tag TAG          - Use a specific defender version tag (e.g., _33_00_123)
@@ -74,9 +79,19 @@ REQUIRED (via environment variable or parameter):
   --console URL      Your Prisma Cloud console URL (parameter)
                      Example: https://us-east1.cloud.twistlock.com/us-2-XXXXXX
 
-  PRISMA_TOKEN       Your Prisma Cloud authentication token (env variable)
-  --token TOKEN      Your Prisma Cloud authentication token (parameter)
+AUTHENTICATION (one of the following):
+  Option 1: Direct token
+    PRISMA_TOKEN       Your Prisma Cloud authentication token (env variable)
+    --token TOKEN      Your Prisma Cloud authentication token (parameter)
 
+  Option 2: Service account credentials (auto-generates token)
+    PRISMA_ACCESS_KEY  Access Key ID (env variable)
+    --user KEY_ID      Access Key ID (parameter)
+
+    PRISMA_SECRET_KEY  Access Key Secret (env variable)
+    --password SECRET  Access Key Secret (parameter)
+
+  If both a token and credentials are provided, the token takes precedence.
   Parameters override environment variables if both are set.
 
 CUSTOM OPTIONS (must come before standard options):
@@ -127,6 +142,17 @@ EXAMPLES:
   # Mixing: console via env, token via parameter
   export PRISMA_CONSOLE="https://us-east1.cloud.twistlock.com/us-2-XXXXXX"
   ./custom_defender_install.sh --token "your-token-here" -v -m -n
+
+  # Using service account credentials (auto-generates token)
+  export PRISMA_CONSOLE="https://us-east1.cloud.twistlock.com/us-2-XXXXXX"
+  export PRISMA_ACCESS_KEY="your-access-key-id"
+  export PRISMA_SECRET_KEY="your-secret-key"
+  ./custom_defender_install.sh -v -m -n
+
+  # Using service account credentials via parameters
+  ./custom_defender_install.sh \
+    --console "https://us-east1.cloud.twistlock.com/us-2-XXXXXX" \
+    --user "your-access-key-id" --password "your-secret-key" -v -m -n
 
   # Install specific version from a tar.gz backup
   ./custom_defender_install.sh --tag _34_01_132 --image ./defender_backup.tar.gz -v -m -n
@@ -191,6 +217,14 @@ while [[ $# -gt 0 ]]; do
             PRISMA_TOKEN="$2"
             shift 2
             ;;
+        --user)
+            PRISMA_ACCESS_KEY="$2"
+            shift 2
+            ;;
+        --password)
+            PRISMA_SECRET_KEY="$2"
+            shift 2
+            ;;
         --help|-h)
             show_help
             exit 0
@@ -210,8 +244,18 @@ validate_env() {
     if [ -z "${PRISMA_CONSOLE}" ]; then
         missing="${missing}  PRISMA_CONSOLE (env) or --console (parameter)\n"
     fi
+
+    # Need either a token or both access key + secret
     if [ -z "${PRISMA_TOKEN}" ]; then
-        missing="${missing}  PRISMA_TOKEN (env) or --token (parameter)\n"
+        if [ -z "${PRISMA_ACCESS_KEY}" ] && [ -z "${PRISMA_SECRET_KEY}" ]; then
+            missing="${missing}  Authentication: provide one of the following:\n"
+            missing="${missing}    - PRISMA_TOKEN (env) or --token (parameter)\n"
+            missing="${missing}    - PRISMA_ACCESS_KEY (env) / --user AND PRISMA_SECRET_KEY (env) / --password\n"
+        elif [ -z "${PRISMA_ACCESS_KEY}" ]; then
+            missing="${missing}  PRISMA_ACCESS_KEY (env) or --user (parameter) - required with --password\n"
+        elif [ -z "${PRISMA_SECRET_KEY}" ]; then
+            missing="${missing}  PRISMA_SECRET_KEY (env) or --password (parameter) - required with --user\n"
+        fi
     fi
 
     if [ -n "${missing}" ]; then
@@ -220,6 +264,52 @@ validate_env() {
         echo "Run with --help for usage information."
         exit 1
     fi
+}
+
+# Authenticate using service account credentials to obtain a token
+authenticate() {
+    local api_base="${PRISMA_CONSOLE%/}"
+    api_base="${api_base%/api/v1}"
+    api_base="${api_base%/api}"
+
+    local auth_url="${api_base}/api/v1/authenticate"
+
+    print_info "Authenticating with service account credentials..."
+
+    local auth_response
+    local http_code
+    auth_response=$(mktemp)
+
+    http_code=$(curl -sSL -w "%{http_code}" \
+        -H "Content-Type: application/json" \
+        -X POST \
+        -d '{"username":"'"${PRISMA_ACCESS_KEY}"'","password":"'"${PRISMA_SECRET_KEY}"'"}' \
+        "${auth_url}" \
+        -o "${auth_response}" 2>/dev/null)
+
+    if [ "${http_code}" != "200" ]; then
+        print_error "Authentication failed (HTTP ${http_code})"
+        print_error ""
+        print_error "Possible causes:"
+        print_error "  - Invalid access key or secret"
+        print_error "  - Incorrect PRISMA_CONSOLE URL"
+        print_error "  - Network connectivity issues"
+        rm -f "${auth_response}"
+        exit 1
+    fi
+
+    # Extract token from JSON response
+    local token
+    token=$(grep -o '"token":"[^"]*"' "${auth_response}" | head -1 | cut -d'"' -f4)
+    rm -f "${auth_response}"
+
+    if [ -z "${token}" ]; then
+        print_error "Authentication succeeded but failed to extract token from response"
+        exit 1
+    fi
+
+    PRISMA_TOKEN="${token}"
+    print_info "Authentication successful (token valid for ~30 minutes)"
 }
 
 # Check if Docker image exists locally
@@ -272,6 +362,11 @@ load_image_from_file() {
 # Main execution
 main() {
     validate_env
+
+    # If no token provided, authenticate with service account credentials
+    if [ -z "${PRISMA_TOKEN}" ] && [ -n "${PRISMA_ACCESS_KEY}" ]; then
+        authenticate
+    fi
 
     print_info "Prisma Cloud Custom Defender Installer"
     print_info "======================================="
@@ -346,12 +441,13 @@ main() {
         print_error "Failed to download defender.sh (HTTP ${http_code})"
         print_error ""
         print_error "Possible causes:"
-        print_error "  - Token expired (tokens typically expire after ~10 minutes)"
+        print_error "  - Token expired (manually provided tokens expire after ~10 minutes,"
+        print_error "    auto-generated tokens via --user/--password expire after ~30 minutes)"
         print_error "  - Incorrect PRISMA_CONSOLE URL"
         print_error "  - Network connectivity issues"
         print_error ""
-        print_error "To get a fresh token, run the defender download command from the"
-        print_error "Prisma Cloud console and copy the token from the curl command."
+        print_error "Try using --user and --password to auto-generate a fresh token,"
+        print_error "or get a fresh token from the Prisma Cloud console."
         rm -rf "${temp_dir}"
         exit 1
     fi
