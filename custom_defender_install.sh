@@ -510,10 +510,15 @@ main() {
 
     # 4b: Conditionally inject CPU limit
     if [ -n "${CPU_LIMIT}" ]; then
-        print_info "Injecting CPU limit: --cpuset-cpus=${CPU_LIMIT} into twistlock.sh via defender.sh"
-        sed -i.bak '/Failed downloading twistlock.sh/a\
+        available_cpus=$(nproc)
+        if [ "$available_cpus" -lt 2 ]; then
+            print_warning "Only ${available_cpus} CPU core(s) available. Skipping --cpuset-cpus to avoid errors on shared-core instances."
+        else
+            print_info "Injecting CPU limit: --cpuset-cpus=${CPU_LIMIT} into twistlock.sh via defender.sh"
+            sed -i.bak '/Failed downloading twistlock.sh/a\
 	sed -i.bak '"'"'/pid=host is needed/a\\additional_parameters+=" --cpuset-cpus='"${CPU_LIMIT}"' "'"'"' twistlock.sh
 ' "${defender_script}"
+        fi
     fi
 
     # 4c: Conditionally inject memory limit (replaces default -m 512m)
