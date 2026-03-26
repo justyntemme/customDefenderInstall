@@ -538,7 +538,10 @@ main() {
     console_host="${console_host%%/*}"
 
     # Build the command arguments
-    local cmd_args="-c ${console_host}"
+    # -u assigns globally unique names to hosts, preventing defenders from
+    # overwriting each other in the console (required for autoscale groups,
+    # overlapping IPs, or hosts with identical hostnames)
+    local cmd_args="-c ${console_host} -u"
 
     # Add custom tag override for twistlock.sh
     if [ -n "${CUSTOM_TAG}" ]; then
